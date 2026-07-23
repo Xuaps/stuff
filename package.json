@@ -3,10 +3,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/*.test.js",
+    "test": "node --test test/*.test.js sync/*.test.js",
+    "test:server": "node --test sync-server/*.test.js",
+    "test:all": "npm test && npm run test:server && npm run test:e2e",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.2",
+    "web-push": "^3.6.7",
+    "ws": "^8.21.1",
+    "y-indexeddb": "^9.0.12",
+    "yjs": "^13.6.31"
   }
 }

@@ -35,6 +35,16 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
 
   if (persisted == null && initialState != null) await persistence.save(state);
 
+  // Sync providers can publish remote CRDT changes without changing the local API.
+  const unsubscribePersistence = typeof persistence.subscribe === "function"
+    ? persistence.subscribe(next => {
+      state = normalizeState(next ?? emptyState());
+      undoStack.length = 0;
+      redoStack.length = 0;
+      for (const listener of listeners) listener();
+    })
+    : null;
+
   const store = {
     getState: () => clone(state),
     canUndo: () => undoStack.length > 0,
@@ -411,6 +421,9 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       return area;
     }),
   };
+
+  // The store normally lives for the lifetime of the page; expose cleanup for tests/providers.
+  store.dispose = () => unsubscribePersistence?.();
 
   return store;
 

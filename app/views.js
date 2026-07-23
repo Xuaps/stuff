@@ -1,11 +1,11 @@
 import { todayStr } from "./store.js";
 import { parseCapture } from "./parse.js";
-import * as chronoModule from "https://cdn.jsdelivr.net/npm/chrono-node@2/+esm";
 
-const chrono = chronoModule.default || chronoModule;
+// Natural-language parsing is optional; the local app never fetches a CDN at startup.
+const chrono = null;
 const sidebar = document.getElementById("sidebar");
 const main = document.getElementById("main");
-export function mount(store) {
+export function mount(store, { syncPanel: makeSyncPanel } = {}) {
   let view = { list: "inbox", projectId: null, areaId: null, tag: null };
   let selectedId = null;
   let selectedIds = new Set();
@@ -124,6 +124,16 @@ export function mount(store) {
       sidebarItem({ icon: "＋", label: "New Area", onclick: addArea }),
     );
     sidebar.append(actions);
+    if (makeSyncPanel) {
+      const syncButton = sidebarItem({ icon: "⇄", label: "Sync", onclick: async () => {
+        const panel = await makeSyncPanel();
+        const overlay = element("div", "modal-overlay", "");
+        overlay.append(panel);
+        overlay.onclick = event => { if (event.target === overlay) overlay.remove(); };
+        document.body.append(overlay);
+      }});
+      sidebar.append(syncButton);
+    }
 
     function projectItem(project) {
       const open = store.tasksForProject(project.id, { includeDone: false }).length;

@@ -8,6 +8,13 @@
   <title>Things Web</title>
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="stylesheet" href="./styles.css">
+  <script type="importmap">
+    {"imports": {
+      "yjs": "https://cdn.jsdelivr.net/npm/yjs@13/+esm",
+      "y-indexeddb": "https://cdn.jsdelivr.net/npm/y-indexeddb@9/+esm",
+      "@simplewebauthn/browser": "https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@13/+esm"
+    }}
+  </script>
 </head>
 <body>
   <nav id="sidebar" aria-label="Things lists"></nav>
