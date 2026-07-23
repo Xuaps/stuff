@@ -89,6 +89,42 @@ test("today keeps evening tasks in the evening section", async () => {
   assert.deepEqual(tasks.filter(task => task.evening).map(task => task.title), ["Evening task"]);
 });
 
+test("tag filtering returns only open tasks with the requested tag", async () => {
+  const store = await createStore({ persistence: createMemoryPersistence() });
+  const open = await store.addTask({ title: "Open match", tags: ["work", "focus"] });
+  const done = await store.addTask({ title: "Done match", tags: ["work"] });
+  await store.addTask({ title: "Different tag", tags: ["home"] });
+  await store.completeTask(done.id);
+
+  assert.deepEqual(store.tasksForTag("work").map(task => task.id), [open.id]);
+  assert.deepEqual(store.allTags(), ["focus", "home", "work"]);
+});
+
+test("deadline changes independently from scheduled date", async () => {
+  const store = await createStore({ persistence: createMemoryPersistence() });
+  const task = await store.addTask({ title: "Keep dates separate", when: "2025-05-20", deadline: "2025-05-30" });
+
+  await store.updateTask(task.id, { deadline: "2025-05-25" });
+  assert.equal(store.taskById(task.id).when, "2025-05-20");
+  assert.equal(store.taskById(task.id).deadline, "2025-05-25");
+
+  await store.updateTask(task.id, { deadline: null });
+  assert.equal(store.taskById(task.id).when, "2025-05-20");
+  assert.equal(store.taskById(task.id).deadline, null);
+});
+
+test("notes update command persists task notes", async () => {
+  const persistence = createMemoryPersistence();
+  const store = await createStore({ persistence });
+  const task = await store.addTask("Remember the details");
+
+  await store.updateTask(task.id, { notes: "Call before Friday" });
+
+  assert.equal(store.taskById(task.id).notes, "Call before Friday");
+  const reloaded = await createStore({ persistence });
+  assert.equal(reloaded.taskById(task.id).notes, "Call before Friday");
+});
+
 test("upcoming tasks are ordered chronologically for date grouping", async () => {
   const store = await createStore({
     persistence: createMemoryPersistence(),

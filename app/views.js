@@ -322,6 +322,8 @@ export function mount(store) {
     if (task.deadline) {
       const deadline = pill(`⚑ ${formatDate(task.deadline)}`);
       deadline.classList.add("deadline-pill");
+      const tone = deadlineTone(task.deadline);
+      if (tone) deadline.classList.add(tone);
       meta.append(deadline);
     }
     const project = store.projectById(task.projectId);
@@ -546,6 +548,19 @@ function groupBy(items, key) {
     (groups[group] ||= []).push(item);
     return groups;
   }, {});
+}
+
+function deadlineTone(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return "";
+  const days = (dateNumber(value) - dateNumber(todayStr())) / 864e5;
+  if (days < 0) return "overdue";
+  if (days <= 2) return "near";
+  return "";
+}
+
+function dateNumber(value) {
+  const [year, month, day] = value.split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
 }
 
 function formatDate(value) {

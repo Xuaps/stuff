@@ -19,7 +19,10 @@
   --text: #3a3a38;
   --text-dim: #8a8781;
   --yellow: #f7d354;
+  --warning: #c0762a;
+  --warning-soft: #fff1d7;
   --danger: #d84f4f;
+  --danger-soft: #fde7e7;
 }
 
 * { box-sizing: border-box; margin: 0; }
@@ -159,7 +162,9 @@ input, textarea, select { color: inherit; font: inherit; }
   font-size: 11px;
 }
 .tag-pill { padding: 1px 8px; }
-.deadline-pill { color: #c0762a; }
+.deadline-pill { color: var(--text-dim); }
+.deadline-pill.near { color: var(--warning); background: var(--warning-soft); font-weight: 600; }
+.deadline-pill.overdue { color: var(--danger); background: var(--danger-soft); font-weight: 600; }
 .when-pill { color: var(--blue); font-size: 11px; }
 .when-pill.overdue { color: var(--danger); }
 .star { padding: 0 2px; color: #d5d2cc; font-size: 15px; }
@@ -218,6 +223,8 @@ input, textarea, select { color: inherit; font: inherit; }
     --text: #e5e4e0;
     --text-dim: #99958e;
     --blue-soft: #243a58;
+    --warning-soft: #4a3823;
+    --danger-soft: #4a2929;
   }
   .details input[type="date"], .details input[type="text"], .details select, .project-area-select { background: #303030; }
   .tag-pill, .pill-btn { background: #383735; color: #d0cdc7; }
