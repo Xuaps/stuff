@@ -274,10 +274,11 @@ export function mount(store) {
 
     const star = element("button", `star${task.when === todayStr() && !task.done ? " on" : ""}`, "★");
     star.type = "button";
-    star.title = "Move to Today";
+    star.title = task.when === todayStr() ? "Move to Inbox" : "Move to Today";
+    star.setAttribute("aria-label", star.title);
     star.onclick = event => {
       event.stopPropagation();
-      run(store.updateTask(task.id, { when: task.when === todayStr() ? "inbox" : todayStr(), evening: false }));
+      run(store.toggleToday(task.id));
     };
 
     row.append(checkbox, body, star);
@@ -302,7 +303,7 @@ export function mount(store) {
     notes.onblur = () => run(store.updateTask(task.id, { notes: notes.value.trim() }));
 
     const whenRow = row("When");
-    [["Inbox", "inbox"], ["Today", todayStr()], ["Evening", "evening"], ["Someday", "someday"]].forEach(([label, value]) => {
+    [["Inbox", "inbox"], ["Today", todayStr()], ["This Evening", "evening"], ["Someday", "someday"]].forEach(([label, value]) => {
       const button = element("button", `pill-btn${isWhen(value) ? " on" : ""}`, label);
       button.type = "button";
       button.onclick = () => {
@@ -313,7 +314,7 @@ export function mount(store) {
     });
     const dateInput = document.createElement("input");
     dateInput.type = "date";
-    dateInput.value = /^\d{4}-/.test(task.when) ? task.when : "";
+    dateInput.value = /^\d{4}-\d{2}-\d{2}$/.test(task.when) ? task.when : "";
     dateInput.onchange = () => {
       if (dateInput.value) run(store.updateTask(task.id, { when: dateInput.value, evening: false }));
     };

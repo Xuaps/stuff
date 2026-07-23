@@ -62,3 +62,93 @@ test("records retain ids, positions, and tombstones", async () => {
   assert.equal(saved.tasks[0].tombstone, true);
   assert.equal(store.tasks().length, 0);
 });
+
+test("today includes the date boundary and overdue tasks, but not tomorrow", async () => {
+  const store = await createStore({
+    persistence: createMemoryPersistence(),
+    today: () => "2025-05-15",
+  });
+  await store.addTask({ title: "Today", when: "2025-05-15" });
+  await store.addTask({ title: "Overdue", when: "2025-05-14" });
+  await store.addTask({ title: "Tomorrow", when: "2025-05-16" });
+
+  assert.deepEqual(store.tasksForList("today").map(task => task.title), ["Today", "Overdue"]);
+  assert.deepEqual(store.tasksForList("upcoming").map(task => task.title), ["Tomorrow"]);
+});
+
+test("today keeps evening tasks in the evening section", async () => {
+  const store = await createStore({
+    persistence: createMemoryPersistence(),
+    today: () => "2025-05-15",
+  });
+  await store.addTask({ title: "Day task", when: "2025-05-15" });
+  await store.addTask({ title: "Evening task", when: "2025-05-15", evening: true });
+
+  const tasks = store.tasksForList("today");
+  assert.deepEqual(tasks.filter(task => !task.evening).map(task => task.title), ["Day task"]);
+  assert.deepEqual(tasks.filter(task => task.evening).map(task => task.title), ["Evening task"]);
+});
+
+test("upcoming tasks are ordered chronologically for date grouping", async () => {
+  const store = await createStore({
+    persistence: createMemoryPersistence(),
+    today: () => "2025-05-15",
+  });
+  await store.addTask({ title: "Later", when: "2025-05-20" });
+  await store.addTask({ title: "Soon", when: "2025-05-16" });
+  await store.addTask({ title: "Middle", when: "2025-05-18" });
+
+  assert.deepEqual(store.tasksForList("upcoming").map(task => task.title), ["Soon", "Middle", "Later"]);
+});
+
+test("someday tasks stay out of actionable lists", async () => {
+  const store = await createStore({
+    persistence: createMemoryPersistence(),
+    today: () => "2025-05-15",
+  });
+  const someday = await store.addTask({ title: "Parked", when: "someday" });
+  const inbox = await store.addTask({ title: "Inbox", when: "inbox" });
+  const project = await store.addProject("Project");
+  await store.updateTask(someday.id, { projectId: project.id });
+  await store.updateTask(inbox.id, { projectId: project.id });
+
+  assert.deepEqual(store.tasksForList("someday").map(task => task.title), ["Parked"]);
+  assert.equal(store.tasksForList("inbox").some(task => task.id === someday.id), false);
+  assert.equal(store.tasksForList("today").some(task => task.id === someday.id), false);
+  assert.equal(store.tasksForList("upcoming").some(task => task.id === someday.id), false);
+  assert.equal(store.tasksForList("anytime").some(task => task.id === someday.id), false);
+});
+
+test("anytime excludes future scheduling while retaining project inbox tasks", async () => {
+  const store = await createStore({
+    persistence: createMemoryPersistence(),
+    today: () => "2025-05-15",
+  });
+  const project = await store.addProject("Project");
+  const future = await store.addTask({ title: "Future", when: "2025-05-20", projectId: project.id });
+  const projectInbox = await store.addTask({ title: "Project inbox", when: "inbox", projectId: project.id });
+  const looseInbox = await store.addTask({ title: "Loose inbox", when: "inbox" });
+
+  assert.deepEqual(store.tasksForList("anytime").map(task => task.title), ["Project inbox"]);
+  assert.equal(store.tasksForList("upcoming").some(task => task.id === future.id), true);
+  assert.equal(store.tasksForList("inbox").some(task => task.id === looseInbox.id), true);
+});
+
+test("toggleToday schedules a task for today and toggles it back to inbox", async () => {
+  const store = await createStore({
+    persistence: createMemoryPersistence(),
+    today: () => "2025-05-15",
+  });
+  const task = await store.addTask({ title: "Plan this", when: "2025-05-20", evening: true });
+
+  await store.toggleToday(task.id);
+  assert.equal(store.taskById(task.id).when, "2025-05-15");
+  assert.equal(store.taskById(task.id).evening, false);
+  assert.deepEqual(store.tasksForList("today").map(item => item.id), [task.id]);
+  assert.deepEqual(store.tasksForList("upcoming"), []);
+
+  await store.toggleToday(task.id);
+  assert.equal(store.taskById(task.id).when, "inbox");
+  assert.equal(store.taskById(task.id).evening, false);
+  assert.deepEqual(store.tasksForList("inbox").map(item => item.id), [task.id]);
+});

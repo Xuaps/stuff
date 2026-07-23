@@ -48,7 +48,7 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
     projectById: id => copyLive(state.projects, id),
     areaById: id => copyLive(state.areas, id),
     allTags: () => [...new Set(active(state.tasks).flatMap(task => task.tags))].sort(),
-    tasksForList: (name, options = {}) => tasksForList(state, name, typeof today === "function" ? today() : today, options).map(clone),
+    tasksForList: (name, options = {}) => tasksForList(state, name, currentToday(), options).map(clone),
     tasksForProject: (projectId, { includeDone = true } = {}) => active(state.tasks)
       .filter(task => task.projectId === projectId && (includeDone || !task.done))
       .sort(comparePos)
@@ -93,6 +93,15 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
         if (key === "when" && typeof value !== "string") continue;
         task[key] = value;
       }
+      return task;
+    }),
+
+    toggleToday: id => commit(draft => {
+      const task = findLive(draft.tasks, id);
+      if (!task) return null;
+      const date = currentToday();
+      task.when = task.when === date ? "inbox" : date;
+      task.evening = false;
       return task;
     }),
 
@@ -157,6 +166,10 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
   };
 
   return store;
+
+  function currentToday() {
+    return typeof today === "function" ? today() : today;
+  }
 
   function commit(mutator) {
     const operation = writes.then(async () => {
@@ -275,7 +288,7 @@ function tasksForList(state, name, today, options) {
       result = tasks.filter(task => !task.done && isDate(task.when) && task.when > today);
       break;
     case "anytime":
-      result = tasks.filter(task => !task.done && task.when !== "someday" && (task.projectId || task.when !== "inbox"));
+      result = tasks.filter(task => !task.done && task.when !== "someday" && !(isDate(task.when) && task.when > today) && (task.projectId || task.when !== "inbox"));
       break;
     case "someday":
       result = tasks.filter(task => !task.done && task.when === "someday");
@@ -292,7 +305,8 @@ function tasksForList(state, name, today, options) {
     default:
       result = [];
   }
-  return name === "logbook" ? result : result.sort(comparePos);
+  if (name === "logbook") return result;
+  return result.sort(name === "upcoming" ? compareWhen : comparePos);
 }
 
 function active(records) {
@@ -310,6 +324,10 @@ function copyLive(records, id) {
 
 function comparePos(a, b) {
   return String(a.pos).localeCompare(String(b.pos), "en", { numeric: true }) || String(a.id).localeCompare(String(b.id));
+}
+
+function compareWhen(a, b) {
+  return String(a.when).localeCompare(String(b.when)) || comparePos(a, b);
 }
 
 function nextPos(records) {
