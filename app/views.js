@@ -1,11 +1,16 @@
 import { todayStr } from "./store.js";
+import { parseCapture } from "./parse.js";
+import * as chronoModule from "https://cdn.jsdelivr.net/npm/chrono-node@2/+esm";
 
+const chrono = chronoModule.default || chronoModule;
 const sidebar = document.getElementById("sidebar");
 const main = document.getElementById("main");
 export function mount(store) {
   let view = { list: "inbox", projectId: null, areaId: null, tag: null };
   let selectedId = null;
   let disposed = false;
+  let palette = null;
+  let shortcuts = null;
 
   const unsubscribe = store.subscribe(render);
   render();
@@ -13,6 +18,8 @@ export function mount(store) {
   document.addEventListener("keydown", onKeydown);
   return () => {
     disposed = true;
+    closeQuickEntry();
+    closeShortcuts();
     unsubscribe();
     document.removeEventListener("keydown", onKeydown);
   };
@@ -563,14 +570,10 @@ export function mount(store) {
     input.setAttribute("aria-label", "New To-Do");
     input.onkeydown = event => {
       if (event.key === "Enter" && input.value.trim()) {
-        const when = view.list === "someday" ? "someday" : view.list === "today" ? todayStr() : "inbox";
-        const title = input.value.trim();
-        run(store.addTask({
-          title,
-          when,
-          projectId: defaults.projectId ?? null,
-          headingId: defaults.headingId ?? null,
-        }).then(() => {
+        const fallbackWhen = view.list === "someday" ? "someday" : view.list === "today" ? todayStr() : "inbox";
+        const task = capturedTask(input.value, defaults, fallbackWhen);
+        if (!task) return;
+        run(store.addTask(task).then(() => {
           render();
           const rows = main.querySelectorAll(".new-task-input");
           rows[rows.length - 1]?.focus();
@@ -580,6 +583,91 @@ export function mount(store) {
     };
     wrapper.append(input);
     container.append(wrapper);
+  }
+
+  function capturedTask(raw, defaults = {}, fallbackWhen = "inbox") {
+    const parsed = parseCapture(raw, { chrono });
+    if (!parsed.title) return null;
+    const project = parsed.projectName
+      ? store.projects().find(item => item.title.toLowerCase() === parsed.projectName.toLowerCase())
+      : null;
+    return {
+      title: parsed.title,
+      when: parsed.when === "inbox" ? fallbackWhen : parsed.when,
+      tags: parsed.tags,
+      deadline: parsed.deadline,
+      projectId: project?.id ?? defaults.projectId ?? null,
+      headingId: project ? null : defaults.headingId ?? null,
+    };
+  }
+
+  function openQuickEntry() {
+    if (palette) {
+      palette.input.focus();
+      return;
+    }
+    closeShortcuts();
+    const overlay = element("div", "modal-overlay", "");
+    const dialog = element("div", "capture-palette", "");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const heading = element("h2", "", "Quick Entry");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "What needs doing?";
+    input.setAttribute("aria-label", "Quick Entry");
+    input.autocomplete = "off";
+    input.onkeydown = event => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeQuickEntry();
+      }
+      if (event.key === "Enter" && input.value.trim()) {
+        const task = capturedTask(input.value, {}, "inbox");
+        if (!task) return;
+        closeQuickEntry();
+        run(store.addTask(task).then(render));
+      }
+    };
+    dialog.append(heading, input);
+    overlay.append(dialog);
+    overlay.onclick = event => {
+      if (event.target === overlay) closeQuickEntry();
+    };
+    document.body.append(overlay);
+    palette = { overlay, input };
+    input.focus();
+  }
+
+  function closeQuickEntry() {
+    palette?.overlay.remove();
+    palette = null;
+  }
+
+  function openShortcuts() {
+    if (shortcuts) return;
+    closeQuickEntry();
+    const overlay = element("div", "modal-overlay", "");
+    const dialog = element("div", "shortcut-sheet", "");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const heading = element("h2", "", "Keyboard Shortcuts");
+    const list = element("dl", "", "");
+    [["Space / N", "New to-do"], ["⌘ / Ctrl + K", "Quick Entry"], ["Esc", "Close overlay or selection"], ["?", "Show shortcuts"]].forEach(([key, description]) => {
+      list.append(element("dt", "", key), element("dd", "", description));
+    });
+    dialog.append(heading, list);
+    overlay.append(dialog);
+    overlay.onclick = event => {
+      if (event.target === overlay) closeShortcuts();
+    };
+    document.body.append(overlay);
+    shortcuts = overlay;
+  }
+
+  function closeShortcuts() {
+    shortcuts?.remove();
+    shortcuts = null;
   }
 
   function editableHeading(title, save) {
@@ -666,7 +754,23 @@ export function mount(store) {
   }
 
   function onKeydown(event) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openQuickEntry();
+      return;
+    }
+    if (event.key === "Escape" && (palette || shortcuts)) {
+      event.preventDefault();
+      closeQuickEntry();
+      closeShortcuts();
+      return;
+    }
     if (event.target.matches("input, textarea, [contenteditable], select")) return;
+    if (event.key === "?") {
+      event.preventDefault();
+      openShortcuts();
+      return;
+    }
     if (event.key === " " || event.key.toLowerCase() === "n") {
       event.preventDefault();
       main.querySelector(".new-task-input")?.focus();
