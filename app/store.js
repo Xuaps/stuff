@@ -30,11 +30,15 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
   let state = normalizeState(persisted ?? initialState ?? emptyState());
   const listeners = new Set();
   let writes = Promise.resolve();
+  const undoStack = [];
+  const redoStack = [];
 
   if (persisted == null && initialState != null) await persistence.save(state);
 
   const store = {
     getState: () => clone(state),
+    canUndo: () => undoStack.length > 0,
+    canRedo: () => redoStack.length > 0,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -87,6 +91,9 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       .filter(task => !task.done && task.tags.includes(tag))
       .sort(comparePos)
       .map(clone),
+
+    undo: () => historyCommand("undo"),
+    redo: () => historyCommand("redo"),
 
     addTask: (input, fields = {}) => commit(draft => {
       const values = typeof input === "string" ? { ...fields, title: input } : { ...(input || {}) };
@@ -162,6 +169,31 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       if (!heading) return null;
       task.projectId = heading.projectId;
       task.headingId = heading.id;
+      return task;
+    }),
+
+    reorderTask: (taskId, placement = {}) => commit(draft => {
+      const task = findLive(draft.tasks, taskId);
+      if (!task) return null;
+      const request = typeof placement === "string" ? { beforeId: placement } : (placement || {});
+      const hasProject = Object.prototype.hasOwnProperty.call(request, "projectId");
+      const hasHeading = Object.prototype.hasOwnProperty.call(request, "headingId");
+      const projectId = hasProject ? nullableId(request.projectId) : task.projectId;
+      const headingId = hasHeading ? nullableId(request.headingId) : task.headingId;
+      if (headingId) {
+        const heading = findLive(draft.headings, headingId);
+        if (!heading || heading.projectId !== projectId) return null;
+      }
+      task.projectId = projectId;
+      task.headingId = headingId;
+      const siblings = draft.tasks
+        .filter(item => !item.tombstone && item.id !== task.id && item.projectId === projectId && item.headingId === headingId)
+        .sort(comparePos);
+      let next = request.beforeId && siblings.find(item => item.id === request.beforeId);
+      let previous = request.afterId && siblings.find(item => item.id === request.afterId);
+      if (next && !previous) previous = siblings[siblings.indexOf(next) - 1];
+      if (previous && !next) next = siblings[siblings.indexOf(previous) + 1];
+      task.pos = fractionalPosition(previous?.pos, next?.pos, siblings);
       return task;
     }),
 
@@ -388,14 +420,39 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
 
   function commit(mutator) {
     const operation = writes.then(async () => {
+      const before = clone(state);
       const draft = clone(state);
       const result = mutator(draft);
+      if (sameState(before, draft)) return result == null ? null : clone(result);
       await persistence.save(draft);
       state = draft;
+      undoStack.push({ before, after: clone(draft) });
+      redoStack.length = 0;
       for (const listener of listeners) listener();
       return result == null ? null : clone(result);
     });
     // A failed write must not prevent later commands from running.
+    writes = operation.catch(() => undefined);
+    return operation;
+  }
+
+  function historyCommand(direction) {
+    const operation = writes.then(async () => {
+      const source = direction === "undo" ? undoStack : redoStack;
+      if (!source.length) return false;
+      const entry = source.pop();
+      const target = direction === "undo" ? entry.before : entry.after;
+      try {
+        await persistence.save(target);
+      } catch (error) {
+        source.push(entry);
+        throw error;
+      }
+      state = clone(target);
+      (direction === "undo" ? redoStack : undoStack).push(entry);
+      for (const listener of listeners) listener();
+      return true;
+    });
     writes = operation.catch(() => undefined);
     return operation;
   }
@@ -563,10 +620,42 @@ function compareWhen(a, b) {
 function nextPos(records) {
   let max = -1;
   for (const record of records) {
-    const match = /^a([0-9a-z]+)$/i.exec(String(record.pos || ""));
-    if (match) max = Math.max(max, parseInt(match[1], 36));
+    const value = positionNumber(record.pos);
+    if (value != null) max = Math.max(max, value);
   }
-  return `a${(max + 1).toString(36)}`;
+  const next = max + 1;
+  return `a${Number.isInteger(next) ? next.toString(36) : formatPosition(next)}`;
+}
+
+/** Return a position strictly between its neighbors without renumbering them. */
+export function fractionalPosition(previous, next, siblings = []) {
+  const left = positionNumber(previous);
+  const right = positionNumber(next);
+  if (left != null && right != null && right > left) return `a${formatPosition((left + right) / 2)}`;
+  if (left != null) return `a${formatPosition(left + 1)}`;
+  if (right != null) return `a${formatPosition(right - 1)}`;
+  return nextPos(siblings);
+}
+
+function positionNumber(value) {
+  if (value == null) return null;
+  const text = String(value);
+  const decimal = /^a(-?\d+(?:\.\d+)?)$/i.exec(text);
+  if (decimal) return Number(decimal[1]);
+  const base36 = /^a([0-9a-z]+)$/i.exec(text);
+  return base36 ? parseInt(base36[1], 36) : null;
+}
+
+function formatPosition(value) {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(12)));
+}
+
+function nullableId(value) {
+  return value == null || value === "" ? null : String(value);
+}
+
+function sameState(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function isDate(value) {

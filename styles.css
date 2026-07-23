@@ -155,7 +155,20 @@ button, input, textarea, select { transition: background-color 160ms ease, borde
   transition: background-color 160ms ease;
 }
 .task:hover { background: var(--surface-hover); }
-.task.selected { background: var(--blue-soft); }
+.task.selected { background: var(--blue-soft); box-shadow: inset 2px 0 var(--blue); }
+.task.drag-over { border-top: 2px solid var(--blue); }
+#sidebar .drop-target { background: var(--blue-soft); }
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: -8px 0 12px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
 .checkbox {
   position: relative;
   width: 17px;

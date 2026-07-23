@@ -268,6 +268,72 @@ test("headings support CRUD, ordered positions, and task assignment", async () =
   assert.equal(persistence.snapshot().headings.find(heading => heading.id === first.id).tombstone, true);
 });
 
+test("undo and redo restore committed mutations", async () => {
+  const store = await createStore({
+    persistence: createMemoryPersistence(),
+    today: () => "2025-05-15",
+    now: () => 1000,
+  });
+  const project = await store.addProject("Project");
+  const heading = await store.addHeading({ title: "Heading", projectId: project.id });
+  const task = await store.addTask({ title: "Task", when: "inbox" });
+
+  await store.updateTask(task.id, {
+    notes: "Notes", tags: ["work"], deadline: "2025-05-20",
+    when: "2025-05-15", evening: true,
+  });
+  assert.equal(store.taskById(task.id).notes, "Notes");
+  await store.undo();
+  assert.equal(store.taskById(task.id).notes, "");
+  assert.equal(store.taskById(task.id).when, "inbox");
+  await store.redo();
+  assert.equal(store.taskById(task.id).deadline, "2025-05-20");
+
+  await store.assignTaskToProject(task.id, project.id);
+  await store.assignTaskToHeading(task.id, heading.id);
+  await store.completeTask(task.id);
+  await store.undo();
+  assert.equal(store.taskById(task.id).done, false);
+  await store.redo();
+  assert.equal(store.taskById(task.id).done, true);
+
+  const item = await store.addChecklistItem(task.id, "Check me");
+  await store.toggleChecklistItem(task.id, item.id, true);
+  await store.updateChecklistItem(task.id, item.id, { title: "Checked" });
+  await store.removeChecklistItem(task.id, item.id);
+  assert.equal(store.taskById(task.id).checklist.length, 0);
+  await store.undo();
+  assert.equal(store.taskById(task.id).checklist[0].title, "Checked");
+  await store.redo();
+  assert.equal(store.taskById(task.id).checklist.length, 0);
+
+  await store.deleteTask(task.id);
+  assert.equal(store.taskById(task.id), null);
+  await store.undo();
+  assert.equal(store.taskById(task.id).title, "Task");
+  await store.redo();
+  assert.equal(store.taskById(task.id), null);
+});
+
+test("reordering uses fractional positions at both ends and between siblings", async () => {
+  const store = await createStore({ persistence: createMemoryPersistence() });
+  const first = await store.addTask({ title: "First", pos: "a0" });
+  const last = await store.addTask({ title: "Last", pos: "a2" });
+  const middle = await store.addTask({ title: "Middle", pos: "a1" });
+  const original = { first: store.taskById(first.id).pos, last: store.taskById(last.id).pos };
+
+  await store.reorderTask(middle.id, { beforeId: last.id });
+  assert.equal(store.taskById(middle.id).pos, "a1");
+  assert.equal(store.taskById(first.id).pos, original.first);
+  assert.equal(store.taskById(last.id).pos, original.last);
+
+  await store.reorderTask(middle.id, { beforeId: first.id });
+  assert.equal(store.taskById(middle.id).pos, "a-1");
+  await store.reorderTask(middle.id, { afterId: last.id });
+  assert.equal(store.taskById(middle.id).pos, "a3");
+  assert.deepEqual(store.tasks().map(task => task.title), ["First", "Last", "Middle"]);
+});
+
 test("checklist items can be ordered, checked, edited, and removed without completing the parent", async () => {
   const persistence = createMemoryPersistence();
   const store = await createStore({ persistence });

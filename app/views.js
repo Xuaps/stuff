@@ -8,6 +8,9 @@ const main = document.getElementById("main");
 export function mount(store) {
   let view = { list: "inbox", projectId: null, areaId: null, tag: null };
   let selectedId = null;
+  let selectedIds = new Set();
+  let selectionAnchor = null;
+  let dragState = null;
   let disposed = false;
   let palette = null;
   let shortcuts = null;
@@ -36,8 +39,36 @@ export function mount(store) {
 
   function setView(next) {
     view = { projectId: null, areaId: null, tag: null, ...next };
-    selectedId = null;
+    clearSelection();
     render();
+  }
+
+  function clearSelection() {
+    selectedId = null;
+    selectedIds = new Set();
+    selectionAnchor = null;
+  }
+
+  function dropHandlers(drop) {
+    return {
+      ondragover: event => {
+        event.preventDefault();
+        event.currentTarget.classList.add("drop-target");
+      },
+      ondragleave: event => event.currentTarget.classList.remove("drop-target"),
+      ondrop: event => {
+        event.preventDefault();
+        event.currentTarget.classList.remove("drop-target");
+        drop(dragState?.ids || []);
+        dragState = null;
+      },
+    };
+  }
+
+  function dropTasks(ids, action) {
+    const taskIds = ids.length ? ids : selectedIds.size ? [...selectedIds] : [];
+    clearSelection();
+    taskIds.forEach(id => run(action(id)));
   }
 
   function renderSidebar() {
@@ -46,10 +77,10 @@ export function mount(store) {
 
     sidebar.append(
       sidebarItem({ icon: "📥", label: "Inbox", count: store.tasksForList("inbox").length, active: isActive("inbox"), onclick: () => setView({ list: "inbox" }) }),
-      sidebarItem({ icon: "⭐", label: "Today", count: store.tasksForList("today").length, active: isActive("today"), onclick: () => setView({ list: "today" }) }),
+      sidebarItem({ icon: "⭐", label: "Today", count: store.tasksForList("today").length, active: isActive("today"), onclick: () => setView({ list: "today" }), ...dropHandlers(ids => dropTasks(ids, id => store.updateTask(id, { when: todayStr(), evening: false }))) }),
       sidebarItem({ icon: "🗓", label: "Upcoming", count: store.tasksForList("upcoming").length, active: isActive("upcoming"), onclick: () => setView({ list: "upcoming" }) }),
       sidebarItem({ icon: "🌤", label: "Anytime", count: store.tasksForList("anytime").length, active: isActive("anytime"), onclick: () => setView({ list: "anytime" }) }),
-      sidebarItem({ icon: "📦", label: "Someday", count: store.tasksForList("someday").length, active: isActive("someday"), onclick: () => setView({ list: "someday" }) }),
+      sidebarItem({ icon: "📦", label: "Someday", count: store.tasksForList("someday").length, active: isActive("someday"), onclick: () => setView({ list: "someday" }), ...dropHandlers(ids => dropTasks(ids, id => store.updateTask(id, { when: "someday", evening: false }))) }),
       sidebarItem({ icon: "📖", label: "Logbook", count: store.tasksForList("logbook").length, active: isActive("logbook"), onclick: () => setView({ list: "logbook" }) }),
     );
 
@@ -103,6 +134,7 @@ export function mount(store) {
         count: open,
         active: view.projectId === project.id,
         onclick: () => setView({ list: "project", projectId: project.id }),
+        ...dropHandlers(ids => dropTasks(ids, id => store.assignTaskToProject(id, project.id))),
       }));
       const actions = element("span", "sidebar-entity-actions", "");
       actions.append(
@@ -130,12 +162,15 @@ export function mount(store) {
     }
   }
 
-  function sidebarItem({ icon, label, count, active = false, onclick, cls = "" }) {
+  function sidebarItem({ icon, label, count, active = false, onclick, cls = "", ondragover, ondragleave, ondrop }) {
     const button = document.createElement("button");
     button.className = `list-item${active ? " active" : ""}${cls ? ` ${cls}` : ""}`;
     button.append(element("span", "icon", icon), element("span", "", label));
     if (count != null) button.append(element("span", "count", count));
     button.onclick = onclick;
+    if (ondragover) button.ondragover = ondragover;
+    if (ondragleave) button.ondragleave = ondragleave;
+    if (ondrop) button.ondrop = ondrop;
     return button;
   }
 
@@ -172,6 +207,8 @@ export function mount(store) {
     const header = element("div", "", "");
     header.id = "main-header";
     main.append(header);
+    const bulkActions = renderBulkActions();
+    if (bulkActions) main.append(bulkActions);
 
     if (view.list === "project") {
       const project = store.projectById(view.projectId);
@@ -345,8 +382,91 @@ export function mount(store) {
     main.append(block);
   }
 
+  function renderBulkActions() {
+    if (selectedIds.size < 2) return null;
+    const bar = element("div", "bulk-actions", `${selectedIds.size} selected`);
+    const complete = element("button", "pill-btn", "✓ Complete");
+    complete.type = "button";
+    complete.onclick = () => {
+      const ids = [...selectedIds];
+      ids.forEach(id => run(store.completeTask(id)));
+      clearSelection();
+    };
+    const today = element("button", "pill-btn", "⭐ Today");
+    today.type = "button";
+    today.onclick = () => {
+      const ids = [...selectedIds];
+      ids.forEach(id => run(store.updateTask(id, { when: todayStr(), evening: false })));
+      clearSelection();
+    };
+    const remove = element("button", "pill-btn", "🗑 Delete");
+    remove.type = "button";
+    remove.onclick = () => {
+      const ids = [...selectedIds];
+      ids.forEach(id => run(store.deleteTask(id)));
+      clearSelection();
+    };
+    bar.append(complete, today, remove);
+    return bar;
+  }
+
+  function visibleTaskIds() {
+    if (view.list === "project") {
+      const tasks = store.tasksForProject(view.projectId);
+      const open = tasks.filter(task => !task.done);
+      const headings = store.headingsForProject(view.projectId);
+      return [
+        ...open.filter(task => !task.headingId),
+        ...headings.flatMap(heading => open.filter(task => task.headingId === heading.id)),
+        ...tasks.filter(task => task.done && !task.headingId),
+        ...headings.flatMap(heading => tasks.filter(task => task.done && task.headingId === heading.id)),
+      ].map(task => task.id);
+    }
+    if (view.list === "area") {
+      return store.projectsForArea(view.areaId).flatMap(project =>
+        store.tasksForProject(project.id, { includeDone: false }).map(task => task.id));
+    }
+    if (view.list === "tag") return store.tasksForTag(view.tag).map(task => task.id);
+    const tasks = store.tasksForList(view.list);
+    if (["inbox", "anytime", "someday"].includes(view.list)) {
+      const loose = tasks.filter(task => !task.projectId);
+      const groups = groupBy(tasks.filter(task => task.projectId), task => task.projectId);
+      return [...loose, ...Object.values(groups).flat()].map(task => task.id);
+    }
+    return tasks.map(task => task.id);
+  }
+
   function taskElement(task) {
-    const row = element("div", `task${task.done ? " done" : ""}${task.id === selectedId ? " selected" : ""}`, "");
+    const row = element("div", `task${task.done ? " done" : ""}${selectedIds.has(task.id) ? " selected" : ""}`, "");
+    row.dataset.taskId = task.id;
+    row.draggable = true;
+    row.ondragstart = event => {
+      const ids = selectedIds.has(task.id) ? [...selectedIds] : [task.id];
+      dragState = { ids };
+      event.dataTransfer?.setData("text/plain", task.id);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    };
+    row.ondragend = () => {
+      dragState = null;
+      main.querySelectorAll(".drag-over").forEach(node => node.classList.remove("drag-over"));
+    };
+    row.ondragover = event => {
+      event.preventDefault();
+      if (dragState?.ids.includes(task.id)) return;
+      main.querySelectorAll(".drag-over").forEach(node => node.classList.remove("drag-over"));
+      row.classList.add("drag-over");
+    };
+    row.ondragleave = () => row.classList.remove("drag-over");
+    row.ondrop = event => {
+      event.preventDefault();
+      row.classList.remove("drag-over");
+      const ids = dragState?.ids || [event.dataTransfer?.getData("text/plain")];
+      const dragged = ids.filter(Boolean);
+      dragged.forEach(id => {
+        if (id !== task.id) run(store.reorderTask(id, { beforeId: task.id }));
+      });
+      dragState = null;
+    };
     const checkbox = element("button", "checkbox", "");
     checkbox.type = "button";
     checkbox.setAttribute("aria-label", task.done ? `Reopen ${task.title}` : `Complete ${task.title}`);
@@ -359,7 +479,9 @@ export function mount(store) {
     const title = element("div", "task-title", task.title);
     title.contentEditable = "true";
     title.spellcheck = false;
-    title.onclick = event => event.stopPropagation();
+    title.onclick = event => {
+      if (!(event.shiftKey || event.metaKey || event.ctrlKey)) event.stopPropagation();
+    };
     title.onblur = () => {
       const next = title.textContent.trim();
       if (next && next !== task.title) run(store.updateTask(task.id, { title: next }));
@@ -405,14 +527,30 @@ export function mount(store) {
     };
 
     row.append(checkbox, body, star);
-    row.onclick = () => {
-      if (selectedId === task.id) return;
-      selectedId = task.id;
+    row.onclick = event => {
+      if (event.target.closest("button, input, textarea, select, [contenteditable]") && !(event.shiftKey || event.metaKey || event.ctrlKey)) return;
+      const sequence = visibleTaskIds();
+      if (event.shiftKey && selectionAnchor) {
+        const start = sequence.indexOf(selectionAnchor);
+        const end = sequence.indexOf(task.id);
+        if (start >= 0 && end >= 0) {
+          const range = sequence.slice(Math.min(start, end), Math.max(start, end) + 1);
+          selectedIds = new Set(range);
+        }
+      } else if (event.metaKey || event.ctrlKey) {
+        if (selectedIds.has(task.id)) selectedIds.delete(task.id);
+        else selectedIds.add(task.id);
+        selectionAnchor = task.id;
+      } else {
+        selectedIds = new Set([task.id]);
+        selectionAnchor = task.id;
+      }
+      selectedId = selectedIds.size === 1 ? task.id : null;
       render();
-      main.querySelector(".task.selected + .details textarea")?.focus();
+      if (selectedId) main.querySelector(".task.selected + .details textarea")?.focus();
     };
 
-    if (task.id !== selectedId) return row;
+    if (task.id !== selectedId || selectedIds.size !== 1) return row;
     const wrapper = element("div", "task-wrapper", "");
     wrapper.append(row, detailsElement(task));
     return wrapper;
@@ -492,7 +630,7 @@ export function mount(store) {
     const remove = element("button", "pill-btn", "🗑 Delete to-do");
     remove.type = "button";
     remove.onclick = () => run(store.deleteTask(task.id).then(() => {
-      selectedId = null;
+      clearSelection();
       render();
     }));
     deleteRow.append(remove);
@@ -653,7 +791,7 @@ export function mount(store) {
     dialog.setAttribute("aria-modal", "true");
     const heading = element("h2", "", "Keyboard Shortcuts");
     const list = element("dl", "", "");
-    [["Space / N", "New to-do"], ["⌘ / Ctrl + K", "Quick Entry"], ["Esc", "Close overlay or selection"], ["?", "Show shortcuts"]].forEach(([key, description]) => {
+    [["Space / N", "New to-do"], ["⌘ / Ctrl + K", "Quick Entry"], ["⌘ / Ctrl + Z", "Undo"], ["⌘ / Ctrl + Shift + Z", "Redo"], ["Shift-click", "Select a range"], ["⌘ / Ctrl-click", "Toggle selection"], ["Esc", "Close overlay or clear selection"], ["?", "Show shortcuts"]].forEach(([key, description]) => {
       list.append(element("dt", "", key), element("dd", "", description));
     });
     dialog.append(heading, list);
@@ -775,8 +913,13 @@ export function mount(store) {
       event.preventDefault();
       main.querySelector(".new-task-input")?.focus();
     }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      run(event.shiftKey ? store.redo() : store.undo());
+      return;
+    }
     if (event.key === "Escape") {
-      selectedId = null;
+      clearSelection();
       render();
     }
   }
