@@ -144,6 +144,18 @@ export function mount(store) {
     return button;
   }
 
+  function headingAction(label, onclick) {
+    const button = element("button", "heading-action", label === "Delete heading" ? "×" : "✎");
+    button.type = "button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.onclick = event => {
+      event.stopPropagation();
+      onclick();
+    };
+    return button;
+  }
+
   function sectionLabel(text) {
     return element("div", "section-label area-header", text);
   }
@@ -238,15 +250,28 @@ export function mount(store) {
   }
 
   function renderProjectBody(project, progress) {
-    const open = store.tasksForProject(project.id, { includeDone: false });
-    const done = store.tasksForProject(project.id).filter(task => task.done);
-    open.forEach(task => main.append(taskElement(task)));
-    addTaskRow({ projectId: project.id });
+    const tasks = store.tasksForProject(project.id);
+    const open = tasks.filter(task => !task.done);
+    const done = tasks.filter(task => task.done);
+    const headings = store.headingsForProject(project.id);
+
+    open.filter(task => !task.headingId).forEach(task => main.append(taskElement(task)));
+    addTaskRow({ projectId: project.id, headingId: null });
+    headings.forEach(heading => renderHeadingSection(heading, open));
+
     if (done.length) {
-      const heading = element("div", "project-title", "");
-      heading.append(element("span", "", "Completed"), element("span", "progress", `${progress.done} done`));
-      main.append(heading);
-      done.forEach(task => main.append(taskElement(task)));
+      const completed = element("div", "project-title", "");
+      completed.append(element("span", "", "Completed"), element("span", "progress", `${progress.done} done`));
+      main.append(completed);
+      done.filter(task => !task.headingId).forEach(task => main.append(taskElement(task)));
+      headings.forEach(heading => {
+        const headingDone = done.filter(task => task.headingId === heading.id);
+        if (!headingDone.length) return;
+        const doneHeading = element("div", "heading-title completed-heading", "");
+        doneHeading.append(element("span", "", heading.title), element("span", "progress", "completed"));
+        main.append(doneHeading);
+        headingDone.forEach(task => main.append(taskElement(task)));
+      });
     }
 
     const actions = element("div", "project-actions", "");
@@ -262,6 +287,11 @@ export function mount(store) {
     areaSelect.onchange = () => run(store.assignProjectToArea(project.id, areaSelect.value || null));
     actions.append(areaLabel, areaSelect);
 
+    const addHeadingButton = element("button", "pill-btn", "＋ New Heading");
+    addHeadingButton.type = "button";
+    addHeadingButton.onclick = () => addHeading(project);
+    actions.append(addHeadingButton);
+
     const complete = element("button", "pill-btn", project.done ? "✓ Reopen project" : "✓ Complete project");
     complete.onclick = () => run(store.completeProject(project.id, !project.done));
     const remove = element("button", "pill-btn", "🗑 Delete project");
@@ -270,6 +300,22 @@ export function mount(store) {
     };
     actions.append(complete, remove);
     main.append(actions);
+  }
+
+  function renderHeadingSection(heading, open) {
+    const block = element("div", "heading-block", "");
+    const title = element("div", "heading-title", "");
+    title.append(element("span", "", heading.title));
+    const actions = element("span", "heading-actions", "");
+    actions.append(
+      headingAction("Rename heading", () => renameHeading(heading)),
+      headingAction("Delete heading", () => deleteHeading(heading)),
+    );
+    title.append(actions);
+    block.append(title);
+    open.filter(task => task.headingId === heading.id).forEach(task => block.append(taskElement(task)));
+    addTaskRow({ projectId: heading.projectId, headingId: heading.id }, block);
+    main.append(block);
   }
 
   function renderProjectBlock(project) {
@@ -319,6 +365,10 @@ export function mount(store) {
     }
     if (task.when === "someday") meta.append(pill("Someday"));
     task.tags.forEach(tag => meta.append(pill(`#${tag}`)));
+    if (task.checklist.length) {
+      const completedItems = task.checklist.filter(item => item.done).length;
+      meta.append(element("span", "checklist-progress", `✓ ${completedItems}/${task.checklist.length}`));
+    }
     if (task.deadline) {
       const deadline = pill(`⚑ ${formatDate(task.deadline)}`);
       deadline.classList.add("deadline-pill");
@@ -407,6 +457,22 @@ export function mount(store) {
     projectSelect.onchange = () => run(store.assignTaskToProject(task.id, projectSelect.value || null));
     projectRow.append(projectSelect);
 
+    let headingRow = null;
+    if (task.projectId) {
+      headingRow = row("Heading");
+      const headingSelect = document.createElement("select");
+      headingSelect.append(new Option("— none —", ""));
+      store.headingsForProject(task.projectId).forEach(heading => {
+        const option = new Option(heading.title, heading.id);
+        option.selected = heading.id === task.headingId;
+        headingSelect.append(option);
+      });
+      headingSelect.onchange = () => run(store.assignTaskToHeading(task.id, headingSelect.value || null));
+      headingRow.append(headingSelect);
+    }
+
+    const checklist = checklistElement(task);
+
     const deleteRow = row("");
     const remove = element("button", "pill-btn", "🗑 Delete to-do");
     remove.type = "button";
@@ -416,7 +482,9 @@ export function mount(store) {
     }));
     deleteRow.append(remove);
 
-    details.append(notes, whenRow, deadlineRow, tagRow, projectRow, deleteRow);
+    details.append(notes, whenRow, deadlineRow, tagRow, projectRow);
+    if (headingRow) details.append(headingRow);
+    details.append(checklist, deleteRow);
     return details;
 
     function row(label) {
@@ -432,7 +500,54 @@ export function mount(store) {
     }
   }
 
-  function addTaskRow(defaults) {
+  function checklistElement(task) {
+    const checklist = element("div", "checklist", "");
+    checklist.append(element("div", "checklist-label", "Checklist"));
+    task.checklist.forEach(item => {
+      const itemRow = element("div", "checklist-item", "");
+      const checkbox = element("button", `checklist-checkbox${item.done ? " done" : ""}`, item.done ? "✓" : "");
+      checkbox.type = "button";
+      checkbox.setAttribute("aria-label", item.done ? `Uncheck ${item.title}` : `Check ${item.title}`);
+      checkbox.onclick = () => run(store.toggleChecklistItem(task.id, item.id));
+      const title = document.createElement("input");
+      title.type = "text";
+      title.className = "checklist-input";
+      title.value = item.title;
+      title.setAttribute("aria-label", "Checklist item");
+      title.onblur = () => {
+        const next = title.value.trim();
+        if (next && next !== item.title) run(store.updateChecklistItem(task.id, item.id, { title: next }));
+        else title.value = item.title;
+      };
+      title.onkeydown = event => {
+        if (event.key === "Enter") title.blur();
+      };
+      const remove = element("button", "checklist-remove", "×");
+      remove.type = "button";
+      remove.title = "Remove checklist item";
+      remove.setAttribute("aria-label", remove.title);
+      remove.onclick = () => run(store.removeChecklistItem(task.id, item.id));
+      itemRow.append(checkbox, title, remove);
+      checklist.append(itemRow);
+    });
+    const add = document.createElement("input");
+    add.type = "text";
+    add.className = "checklist-add";
+    add.placeholder = "＋ Add checklist item";
+    add.setAttribute("aria-label", "Add checklist item");
+    add.onkeydown = event => {
+      if (event.key === "Enter" && add.value.trim()) {
+        const title = add.value.trim();
+        add.value = "";
+        run(store.addChecklistItem(task.id, title));
+      }
+      if (event.key === "Escape") add.blur();
+    };
+    checklist.append(add);
+    return checklist;
+  }
+
+  function addTaskRow(defaults, container = main) {
     const wrapper = element("div", "new-task-row", "");
     const input = document.createElement("input");
     input.className = "new-task-input";
@@ -442,7 +557,12 @@ export function mount(store) {
       if (event.key === "Enter" && input.value.trim()) {
         const when = view.list === "someday" ? "someday" : view.list === "today" ? todayStr() : "inbox";
         const title = input.value.trim();
-        run(store.addTask({ title, when, projectId: defaults.projectId ?? null }).then(() => {
+        run(store.addTask({
+          title,
+          when,
+          projectId: defaults.projectId ?? null,
+          headingId: defaults.headingId ?? null,
+        }).then(() => {
           render();
           const rows = main.querySelectorAll(".new-task-input");
           rows[rows.length - 1]?.focus();
@@ -451,7 +571,7 @@ export function mount(store) {
       if (event.key === "Escape") input.blur();
     };
     wrapper.append(input);
-    main.append(wrapper);
+    container.append(wrapper);
   }
 
   function editableHeading(title, save) {
@@ -470,6 +590,21 @@ export function mount(store) {
       }
     };
     return heading;
+  }
+
+  function addHeading(project) {
+    const title = prompt("Heading name:");
+    if (title?.trim()) run(store.addHeading({ title, projectId: project.id }));
+  }
+
+  function renameHeading(heading) {
+    const title = prompt("Heading name:", heading.title);
+    if (title?.trim() && title.trim() !== heading.title) run(store.updateHeading(heading.id, { title }));
+  }
+
+  function deleteHeading(heading) {
+    if (!confirm(`Delete heading "${heading.title}"? Its to-dos become unheaded.`)) return;
+    run(store.deleteHeading(heading.id));
   }
 
   function renameProject(project) {

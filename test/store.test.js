@@ -242,3 +242,54 @@ test("deleting an area ungroups projects while deleting a project tombstones its
   assert.equal(saved.projects.find(item => item.id === project.id).tombstone, true);
   assert.equal(saved.tasks.find(item => item.id === task.id).tombstone, true);
 });
+
+test("headings support CRUD, ordered positions, and task assignment", async () => {
+  const persistence = createMemoryPersistence();
+  const store = await createStore({ persistence });
+  const project = await store.addProject("Project");
+  const other = await store.addProject("Other");
+  const first = await store.addHeading({ title: "Later", projectId: project.id, pos: "a2" });
+  const second = await store.addHeading({ title: "Soon", projectId: project.id, pos: "a1" });
+  await store.addHeading({ title: "Other heading", projectId: other.id });
+
+  assert.deepEqual(store.headingsForProject(project.id).map(heading => heading.title), ["Soon", "Later"]);
+  await store.updateHeading(first.id, { title: "Later renamed" });
+  assert.equal(store.headingById(first.id).title, "Later renamed");
+
+  const task = await store.addTask({ title: "Under a heading", projectId: project.id, headingId: second.id });
+  assert.equal(task.headingId, second.id);
+  await store.assignTaskToHeading(task.id, first.id);
+  assert.equal(store.taskById(task.id).headingId, first.id);
+  assert.deepEqual(store.tasksForProject(project.id).map(item => item.id), [task.id]);
+
+  await store.deleteHeading(first.id);
+  assert.equal(store.headingById(first.id), null);
+  assert.equal(store.taskById(task.id).headingId, null);
+  assert.equal(persistence.snapshot().headings.find(heading => heading.id === first.id).tombstone, true);
+});
+
+test("checklist items can be ordered, checked, edited, and removed without completing the parent", async () => {
+  const persistence = createMemoryPersistence();
+  const store = await createStore({ persistence });
+  const task = await store.addTask("Pack for the trip");
+  const later = await store.addChecklistItem(task.id, { title: "Later", pos: "a2" });
+  const first = await store.addChecklistItem(task.id, { title: "First", pos: "a1" });
+  const middle = await store.addChecklistItem(task.id, { title: "Middle", pos: "a1.5" });
+
+  assert.deepEqual(store.taskById(task.id).checklist.map(item => item.title), ["First", "Middle", "Later"]);
+  await store.toggleChecklistItem(task.id, first.id, true);
+  await store.updateChecklistItem(task.id, middle.id, { title: "Middle renamed", done: true });
+  assert.deepEqual(store.taskById(task.id).checklist.map(item => [item.title, item.done]), [
+    ["First", true],
+    ["Middle renamed", true],
+    ["Later", false],
+  ]);
+  await store.toggleChecklistItem(task.id, later.id, true);
+  assert.equal(store.taskById(task.id).checklist.every(item => item.done), true);
+  assert.equal(store.taskById(task.id).done, false);
+
+  await store.removeChecklistItem(task.id, later.id);
+  const reloaded = await createStore({ persistence });
+  assert.deepEqual(reloaded.taskById(task.id).checklist.map(item => item.title), ["First", "Middle renamed"]);
+  assert.equal(reloaded.taskById(task.id).done, false);
+});

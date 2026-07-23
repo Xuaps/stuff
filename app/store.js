@@ -14,7 +14,7 @@ export const LISTS = Object.freeze([
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function emptyState() {
-  return { tasks: [], projects: [], areas: [] };
+  return { tasks: [], projects: [], areas: [], headings: [] };
 }
 
 export function todayStr(date = new Date()) {
@@ -44,13 +44,23 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
     tasks: () => active(state.tasks).sort(comparePos).map(clone),
     projects: () => active(state.projects).sort(comparePos).map(clone),
     areas: () => active(state.areas).sort(comparePos).map(clone),
+    headings: () => active(state.headings).sort(comparePos).map(clone),
     taskById: id => copyLive(state.tasks, id),
     projectById: id => copyLive(state.projects, id),
     areaById: id => copyLive(state.areas, id),
+    headingById: id => copyLive(state.headings, id),
     allTags: () => [...new Set(active(state.tasks).flatMap(task => task.tags))].sort(),
     tasksForList: (name, options = {}) => tasksForList(state, name, currentToday(), options).map(clone),
     tasksForProject: (projectId, { includeDone = true } = {}) => active(state.tasks)
       .filter(task => task.projectId === projectId && (includeDone || !task.done))
+      .sort(comparePos)
+      .map(clone),
+    headingsForProject: projectId => active(state.headings)
+      .filter(heading => heading.projectId === projectId)
+      .sort(comparePos)
+      .map(clone),
+    tasksForHeading: (headingId, { includeDone = true } = {}) => active(state.tasks)
+      .filter(task => task.headingId === headingId && (includeDone || !task.done))
       .sort(comparePos)
       .map(clone),
     projectsForArea: (areaId, { includeDone = true } = {}) => active(state.projects)
@@ -82,10 +92,15 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       const values = typeof input === "string" ? { ...fields, title: input } : { ...(input || {}) };
       const title = String(values.title ?? "").trim();
       if (!title) throw new TypeError("A task title is required");
+      const heading = values.headingId == null || values.headingId === ""
+        ? null
+        : findLive(draft.headings, String(values.headingId));
       const task = normalizeTask({
         ...values,
         id: values.id || idFactory("task"),
         title,
+        projectId: heading ? heading.projectId : values.projectId,
+        headingId: heading?.id ?? null,
         createdAt: values.createdAt ?? now(),
         pos: values.pos || nextPos(draft.tasks),
         done: false,
@@ -113,6 +128,15 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
         if (key === "when" && typeof value !== "string") continue;
         task[key] = value;
       }
+      if (Object.prototype.hasOwnProperty.call(changes || {}, "headingId")) {
+        const heading = task.headingId ? findLive(draft.headings, task.headingId) : null;
+        task.headingId = heading ? heading.id : null;
+        if (heading && !Object.prototype.hasOwnProperty.call(changes || {}, "projectId")) task.projectId = heading.projectId;
+      }
+      if (task.headingId) {
+        const heading = findLive(draft.headings, task.headingId);
+        if (!heading || heading.projectId !== task.projectId) task.headingId = null;
+      }
       return task;
     }),
 
@@ -120,6 +144,24 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       const task = findLive(draft.tasks, taskId);
       if (!task) return null;
       task.projectId = projectId == null || projectId === "" ? null : String(projectId);
+      if (task.headingId) {
+        const heading = findLive(draft.headings, task.headingId);
+        if (!heading || heading.projectId !== task.projectId) task.headingId = null;
+      }
+      return task;
+    }),
+
+    assignTaskToHeading: (taskId, headingId) => commit(draft => {
+      const task = findLive(draft.tasks, taskId);
+      if (!task) return null;
+      if (headingId == null || headingId === "") {
+        task.headingId = null;
+        return task;
+      }
+      const heading = findLive(draft.headings, String(headingId));
+      if (!heading) return null;
+      task.projectId = heading.projectId;
+      task.headingId = heading.id;
       return task;
     }),
 
@@ -147,6 +189,103 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       task.tombstone = true;
       return task;
     }),
+
+    addHeading: (input, fields = {}) => commit(draft => {
+      const values = typeof input === "string" ? { ...fields, title: input } : { ...(input || {}) };
+      const title = String(values.title ?? "").trim();
+      if (!title) throw new TypeError("A heading title is required");
+      const projectId = values.projectId == null || values.projectId === "" ? null : String(values.projectId);
+      if (!projectId) throw new TypeError("A heading project is required");
+      const heading = normalizeHeading({
+        ...values,
+        id: values.id || idFactory("heading"),
+        title,
+        projectId,
+        pos: values.pos || nextPos(draft.headings.filter(item => item.projectId === projectId)),
+        tombstone: false,
+      }, draft.headings.length);
+      draft.headings.push(heading);
+      return heading;
+    }),
+
+    updateHeading: (id, changes) => commit(draft => {
+      const heading = findLive(draft.headings, id);
+      if (!heading) return null;
+      if (Object.prototype.hasOwnProperty.call(changes || {}, "title")) {
+        const title = String(changes.title ?? "").trim();
+        if (title) heading.title = title;
+      }
+      if (Object.prototype.hasOwnProperty.call(changes || {}, "pos")) {
+        const pos = String(changes.pos ?? "").trim();
+        if (pos) heading.pos = pos;
+      }
+      return heading;
+    }),
+
+    deleteHeading: id => commit(draft => {
+      const heading = findLive(draft.headings, id);
+      if (!heading) return null;
+      heading.tombstone = true;
+      for (const task of draft.tasks) {
+        if (task.headingId === id) task.headingId = null;
+      }
+      return heading;
+    }),
+
+    addChecklistItem: (taskId, input, fields = {}) => commit(draft => {
+      const task = findLive(draft.tasks, taskId);
+      if (!task) return null;
+      const values = typeof input === "string" ? { ...fields, title: input } : { ...(input || {}) };
+      const title = String(values.title ?? "").trim();
+      if (!title) throw new TypeError("A checklist item title is required");
+      const item = normalizeChecklistItem({
+        ...values,
+        id: values.id || idFactory("check"),
+        title,
+        done: Boolean(values.done),
+        pos: values.pos || nextPos(task.checklist),
+      }, task.checklist.length);
+      task.checklist.push(item);
+      task.checklist.sort(comparePos);
+      return item;
+    }),
+
+    updateChecklistItem: (taskId, itemId, changes) => commit(draft => {
+      const task = findLive(draft.tasks, taskId);
+      const item = task && task.checklist.find(check => check.id === itemId);
+      if (!item) return null;
+      if (Object.prototype.hasOwnProperty.call(changes || {}, "title")) {
+        const title = String(changes.title ?? "").trim();
+        if (title) item.title = title;
+      }
+      if (Object.prototype.hasOwnProperty.call(changes || {}, "done")) item.done = Boolean(changes.done);
+      if (Object.prototype.hasOwnProperty.call(changes || {}, "pos")) {
+        const pos = String(changes.pos ?? "").trim();
+        if (pos) item.pos = pos;
+      }
+      task.checklist.sort(comparePos);
+      return item;
+    }),
+
+    toggleChecklistItem: (taskId, itemId, completed) => commit(draft => {
+      const task = findLive(draft.tasks, taskId);
+      const item = task && task.checklist.find(check => check.id === itemId);
+      if (!item) return null;
+      item.done = completed == null ? !item.done : Boolean(completed);
+      return item;
+    }),
+
+    removeChecklistItem: (taskId, itemId) => commit(draft => {
+      const task = findLive(draft.tasks, taskId);
+      if (!task) return null;
+      const index = task.checklist.findIndex(item => item.id === itemId);
+      if (index < 0) return null;
+      const [item] = task.checklist.splice(index, 1);
+      return item;
+    }),
+
+    // Keep the command vocabulary symmetrical with deleteTask/deleteHeading.
+    deleteChecklistItem: (taskId, itemId) => store.removeChecklistItem(taskId, itemId),
 
     addProject: (input, fields = {}) => commit(draft => {
       const values = typeof input === "string" ? { ...fields, title: input } : { ...(input || {}) };
@@ -199,6 +338,9 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       project.tombstone = true;
       for (const task of draft.tasks) {
         if (task.projectId === id) task.tombstone = true;
+      }
+      for (const heading of draft.headings) {
+        if (heading.projectId === id) heading.tombstone = true;
       }
       return project;
     }),
@@ -279,10 +421,12 @@ export function normalizeState(raw) {
   const tasks = Array.isArray(source.tasks) ? source.tasks : [];
   const projects = Array.isArray(source.projects) ? source.projects : [];
   const areas = Array.isArray(source.areas) ? source.areas : [];
+  const headings = Array.isArray(source.headings) ? source.headings : [];
   return {
     tasks: tasks.map((task, index) => normalizeTask(task, index)),
     projects: projects.map((project, index) => normalizeProject(project, index)),
     areas: areas.map((area, index) => normalizeArea(area, index)),
+    headings: headings.map((heading, index) => normalizeHeading(heading, index)),
   };
 }
 
@@ -334,17 +478,30 @@ function normalizeArea(raw, index) {
   };
 }
 
+function normalizeHeading(raw, index) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    id: String(source.id || createId("heading")),
+    title: String(source.title ?? ""),
+    projectId: source.projectId == null || source.projectId === "" ? null : String(source.projectId),
+    pos: String(source.pos || `a${index.toString(36)}`),
+    tombstone: Boolean(source.tombstone),
+  };
+}
+
 function normalizeChecklist(value) {
   if (!Array.isArray(value)) return [];
-  return value.map((item, index) => {
-    const source = item && typeof item === "object" ? item : {};
-    return {
-      id: String(source.id || createId("check")),
-      title: String(source.title ?? ""),
-      done: Boolean(source.done),
-      pos: String(source.pos || `a${index.toString(36)}`),
-    };
-  });
+  return value.map(normalizeChecklistItem).sort(comparePos);
+}
+
+function normalizeChecklistItem(raw, index = 0) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    id: String(source.id || createId("check")),
+    title: String(source.title ?? ""),
+    done: Boolean(source.done),
+    pos: String(source.pos || `a${index.toString(36)}`),
+  };
 }
 
 function tasksForList(state, name, today, options) {

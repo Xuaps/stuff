@@ -19,18 +19,22 @@ export function createDexiePersistence({ name = DATABASE_NAME, legacyStorage } =
     areas: "id, pos, tombstone",
     meta: "key",
   });
+  db.version(2).stores({
+    headings: "id, projectId, pos, tombstone",
+  });
 
   return {
     async load() {
-      const [tasks, projects, areas, marker] = await Promise.all([
+      const [tasks, projects, areas, headings, marker] = await Promise.all([
         db.tasks.toArray(),
         db.projects.toArray(),
         db.areas.toArray(),
+        db.headings.toArray(),
         db.meta.get(MIGRATION_KEY),
       ]);
 
       if (!marker) {
-        const hasIndexedData = tasks.length || projects.length || areas.length;
+        const hasIndexedData = tasks.length || projects.length || areas.length || headings.length;
         if (!hasIndexedData) {
           const legacy = readLegacy(legacyStorage);
           if (legacy) {
@@ -44,7 +48,7 @@ export function createDexiePersistence({ name = DATABASE_NAME, legacyStorage } =
         await db.meta.put({ key: MIGRATION_KEY, value: Date.now() });
       }
 
-      return normalizeState({ tasks, projects, areas });
+      return normalizeState({ tasks, projects, areas, headings });
     },
 
     async save(state) {
@@ -53,20 +57,21 @@ export function createDexiePersistence({ name = DATABASE_NAME, legacyStorage } =
 
     // Useful for a clean manual reset and harmless to the store API.
     async clear() {
-      await db.transaction("rw", db.tasks, db.projects, db.areas, db.meta, async () => {
-        await Promise.all([db.tasks.clear(), db.projects.clear(), db.areas.clear(), db.meta.clear()]);
+      await db.transaction("rw", db.tasks, db.projects, db.areas, db.headings, db.meta, async () => {
+        await Promise.all([db.tasks.clear(), db.projects.clear(), db.areas.clear(), db.headings.clear(), db.meta.clear()]);
       });
     },
   };
 }
 
 async function saveRecords(db, state) {
-  await db.transaction("rw", db.tasks, db.projects, db.areas, async () => {
-    await Promise.all([db.tasks.clear(), db.projects.clear(), db.areas.clear()]);
+  await db.transaction("rw", db.tasks, db.projects, db.areas, db.headings, async () => {
+    await Promise.all([db.tasks.clear(), db.projects.clear(), db.areas.clear(), db.headings.clear()]);
     await Promise.all([
       state.tasks.length ? db.tasks.bulkPut(state.tasks) : undefined,
       state.projects.length ? db.projects.bulkPut(state.projects) : undefined,
       state.areas.length ? db.areas.bulkPut(state.areas) : undefined,
+      state.headings.length ? db.headings.bulkPut(state.headings) : undefined,
     ]);
   });
 }
