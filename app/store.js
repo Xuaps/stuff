@@ -53,6 +53,26 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       .filter(task => task.projectId === projectId && (includeDone || !task.done))
       .sort(comparePos)
       .map(clone),
+    projectsForArea: (areaId, { includeDone = true } = {}) => active(state.projects)
+      .filter(project => project.areaId === areaId && (includeDone || !project.done))
+      .sort(comparePos)
+      .map(clone),
+    tasksForArea: (areaId, { includeDone = true } = {}) => {
+      const projectIds = new Set(active(state.projects)
+        .filter(project => project.areaId === areaId)
+        .map(project => project.id));
+      return active(state.tasks)
+        .filter(task => projectIds.has(task.projectId) && (includeDone || !task.done))
+        .sort(comparePos)
+        .map(clone);
+    },
+    projectProgress: projectId => {
+      const tasks = active(state.tasks).filter(task => task.projectId === projectId);
+      return {
+        open: tasks.filter(task => !task.done).length,
+        done: tasks.filter(task => task.done).length,
+      };
+    },
     tasksForTag: tag => active(state.tasks)
       .filter(task => !task.done && task.tags.includes(tag))
       .sort(comparePos)
@@ -96,6 +116,13 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       return task;
     }),
 
+    assignTaskToProject: (taskId, projectId) => commit(draft => {
+      const task = findLive(draft.tasks, taskId);
+      if (!task) return null;
+      task.projectId = projectId == null || projectId === "" ? null : String(projectId);
+      return task;
+    }),
+
     toggleToday: id => commit(draft => {
       const task = findLive(draft.tasks, id);
       if (!task) return null;
@@ -121,11 +148,41 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       return task;
     }),
 
-    addProject: title => commit(draft => {
-      const name = String(title ?? "").trim();
+    addProject: (input, fields = {}) => commit(draft => {
+      const values = typeof input === "string" ? { ...fields, title: input } : { ...(input || {}) };
+      const name = String(values.title ?? "").trim();
       if (!name) throw new TypeError("A project title is required");
-      const project = normalizeProject({ id: idFactory("project"), title: name, pos: nextPos(draft.projects) }, draft.projects.length);
+      const project = normalizeProject({
+        ...values,
+        id: values.id || idFactory("project"),
+        title: name,
+        pos: values.pos || nextPos(draft.projects),
+      }, draft.projects.length);
       draft.projects.push(project);
+      return project;
+    }),
+
+    updateProject: (id, changes) => commit(draft => {
+      const project = findLive(draft.projects, id);
+      if (!project) return null;
+      for (const key of ["title", "notes", "areaId", "when", "deadline"]) {
+        if (!(key in (changes || {}))) continue;
+        let value = changes[key];
+        if (key === "title") {
+          value = String(value ?? "").trim();
+          if (!value) continue;
+        }
+        if (key === "areaId") value = value == null || value === "" ? null : String(value);
+        if (key === "deadline") value = value || null;
+        project[key] = value;
+      }
+      return project;
+    }),
+
+    assignProjectToArea: (projectId, areaId) => commit(draft => {
+      const project = findLive(draft.projects, projectId);
+      if (!project) return null;
+      project.areaId = areaId == null || areaId === "" ? null : String(areaId);
       return project;
     }),
 
@@ -146,11 +203,27 @@ export async function createStore({ persistence = createMemoryPersistence(), ini
       return project;
     }),
 
-    addArea: title => commit(draft => {
-      const name = String(title ?? "").trim();
+    addArea: (input, fields = {}) => commit(draft => {
+      const values = typeof input === "string" ? { ...fields, title: input } : { ...(input || {}) };
+      const name = String(values.title ?? "").trim();
       if (!name) throw new TypeError("An area title is required");
-      const area = normalizeArea({ id: idFactory("area"), title: name, pos: nextPos(draft.areas) }, draft.areas.length);
+      const area = normalizeArea({
+        ...values,
+        id: values.id || idFactory("area"),
+        title: name,
+        pos: values.pos || nextPos(draft.areas),
+      }, draft.areas.length);
       draft.areas.push(area);
+      return area;
+    }),
+
+    updateArea: (id, changes) => commit(draft => {
+      const area = findLive(draft.areas, id);
+      if (!area) return null;
+      if (Object.prototype.hasOwnProperty.call(changes || {}, "title")) {
+        const title = String(changes.title ?? "").trim();
+        if (title) area.title = title;
+      }
       return area;
     }),
 

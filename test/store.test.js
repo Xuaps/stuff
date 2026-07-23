@@ -152,3 +152,57 @@ test("toggleToday schedules a task for today and toggles it back to inbox", asyn
   assert.equal(store.taskById(task.id).evening, false);
   assert.deepEqual(store.tasksForList("inbox").map(item => item.id), [task.id]);
 });
+
+test("projects group by area and expose open/done progress", async () => {
+  const store = await createStore({ persistence: createMemoryPersistence() });
+  const area = await store.addArea("Work");
+  const project = await store.addProject("Launch");
+  const other = await store.addProject("Loose");
+  const open = await store.addTask({ title: "Open", projectId: project.id });
+  const done = await store.addTask({ title: "Done", projectId: project.id });
+  await store.completeTask(done.id);
+  await store.updateProject(project.id, { title: "Launch renamed", areaId: area.id });
+  await store.updateArea(area.id, { title: "Work renamed" });
+
+  assert.deepEqual(store.projectsForArea(area.id).map(item => item.title), ["Launch renamed"]);
+  assert.deepEqual(store.projectsForArea(area.id, { includeDone: false }).map(item => item.id), [project.id]);
+  assert.deepEqual(store.projectsForArea(null).map(item => item.id), [other.id]);
+  assert.deepEqual(store.projectProgress(project.id), { open: 1, done: 1 });
+  assert.deepEqual(store.tasksForArea(area.id, { includeDone: false }).map(item => item.id), [open.id]);
+  assert.equal(store.areaById(area.id).title, "Work renamed");
+});
+
+test("tasks can be assigned to and removed from projects", async () => {
+  const store = await createStore({ persistence: createMemoryPersistence() });
+  const project = await store.addProject("Project");
+  const task = await store.addTask("Move me");
+
+  await store.assignTaskToProject(task.id, project.id);
+  assert.equal(store.taskById(task.id).projectId, project.id);
+  assert.deepEqual(store.tasksForProject(project.id).map(item => item.id), [task.id]);
+
+  await store.assignTaskToProject(task.id, null);
+  assert.equal(store.taskById(task.id).projectId, null);
+  assert.deepEqual(store.tasksForProject(project.id), []);
+});
+
+test("deleting an area ungroups projects while deleting a project tombstones its tasks", async () => {
+  const persistence = createMemoryPersistence();
+  const store = await createStore({ persistence });
+  const area = await store.addArea("Area");
+  const project = await store.addProject("Project");
+  const task = await store.addTask({ title: "Keep until project delete", projectId: project.id });
+
+  await store.assignProjectToArea(project.id, area.id);
+  await store.deleteArea(area.id);
+  assert.equal(store.areaById(area.id), null);
+  assert.equal(store.projectById(project.id).areaId, null);
+  assert.equal(store.taskById(task.id).title, "Keep until project delete");
+
+  await store.deleteProject(project.id);
+  assert.equal(store.projectById(project.id), null);
+  assert.equal(store.taskById(task.id), null);
+  const saved = persistence.snapshot();
+  assert.equal(saved.projects.find(item => item.id === project.id).tombstone, true);
+  assert.equal(saved.tasks.find(item => item.id === task.id).tombstone, true);
+});

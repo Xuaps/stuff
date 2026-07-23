@@ -41,7 +41,7 @@ export function mount(store) {
       sidebarItem({ icon: "📥", label: "Inbox", count: store.tasksForList("inbox").length, active: isActive("inbox"), onclick: () => setView({ list: "inbox" }) }),
       sidebarItem({ icon: "⭐", label: "Today", count: store.tasksForList("today").length, active: isActive("today"), onclick: () => setView({ list: "today" }) }),
       sidebarItem({ icon: "🗓", label: "Upcoming", count: store.tasksForList("upcoming").length, active: isActive("upcoming"), onclick: () => setView({ list: "upcoming" }) }),
-      sidebarItem({ icon: "🌤", label: "Anytime", active: isActive("anytime"), onclick: () => setView({ list: "anytime" }) }),
+      sidebarItem({ icon: "🌤", label: "Anytime", count: store.tasksForList("anytime").length, active: isActive("anytime"), onclick: () => setView({ list: "anytime" }) }),
       sidebarItem({ icon: "📦", label: "Someday", count: store.tasksForList("someday").length, active: isActive("someday"), onclick: () => setView({ list: "someday" }) }),
       sidebarItem({ icon: "📖", label: "Logbook", count: store.tasksForList("logbook").length, active: isActive("logbook"), onclick: () => setView({ list: "logbook" }) }),
     );
@@ -54,12 +54,15 @@ export function mount(store) {
     }
 
     store.areas().forEach(area => {
-      sidebar.append(sectionLabel(area.title || "Area"));
-      projects.filter(project => project.areaId === area.id && !project.done)
+      const areaProjects = projects.filter(project => project.areaId === area.id);
+      const open = areaProjects.reduce((total, project) => total + store.tasksForProject(project.id, { includeDone: false }).length, 0);
+      sidebar.append(areaHeader(area, open));
+      areaProjects.filter(project => !project.done)
         .forEach(project => sidebar.append(projectItem(project)));
       sidebar.append(sidebarItem({
         icon: "▸",
         label: "Show Area",
+        count: open,
         active: view.areaId === area.id,
         onclick: () => setView({ list: "area", areaId: area.id }),
       }));
@@ -86,13 +89,37 @@ export function mount(store) {
 
     function projectItem(project) {
       const open = store.tasksForProject(project.id, { includeDone: false }).length;
-      return sidebarItem({
+      const wrapper = element("div", "sidebar-entity", "");
+      wrapper.append(sidebarItem({
         icon: "◻",
         label: project.title,
-        count: open || null,
+        count: open,
         active: view.projectId === project.id,
         onclick: () => setView({ list: "project", projectId: project.id }),
-      });
+      }));
+      const actions = element("span", "sidebar-entity-actions", "");
+      actions.append(
+        sidebarAction("Rename project", () => renameProject(project)),
+        sidebarAction("Delete project", () => deleteProject(project)),
+      );
+      wrapper.append(actions);
+      return wrapper;
+    }
+
+    function areaHeader(area, open) {
+      const header = element("div", "section-label area-header", "");
+      const title = element("button", "area-title", area.title || "Area");
+      title.type = "button";
+      title.title = "Show area";
+      title.onclick = () => setView({ list: "area", areaId: area.id });
+      header.append(title, element("span", "count", open));
+      const actions = element("span", "sidebar-entity-actions", "");
+      actions.append(
+        sidebarAction("Rename area", () => renameArea(area)),
+        sidebarAction("Delete area", () => deleteArea(area)),
+      );
+      header.append(actions);
+      return header;
     }
   }
 
@@ -100,8 +127,20 @@ export function mount(store) {
     const button = document.createElement("button");
     button.className = `list-item${active ? " active" : ""}${cls ? ` ${cls}` : ""}`;
     button.append(element("span", "icon", icon), element("span", "", label));
-    if (count) button.append(element("span", "count", count));
+    if (count != null) button.append(element("span", "count", count));
     button.onclick = onclick;
+    return button;
+  }
+
+  function sidebarAction(label, onclick) {
+    const button = element("button", "sidebar-action", label === "Delete project" || label === "Delete area" ? "×" : "✎");
+    button.type = "button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.onclick = event => {
+      event.stopPropagation();
+      onclick();
+    };
     return button;
   }
 
@@ -118,16 +157,21 @@ export function mount(store) {
     if (view.list === "project") {
       const project = store.projectById(view.projectId);
       if (!project) return setView({ list: "today" });
-      header.append(element("h1", "", project.title));
-      renderProjectBody(project);
+      const progress = store.projectProgress(project.id);
+      header.append(editableHeading(project.title, title => store.updateProject(project.id, { title })));
+      header.append(element("span", "subtitle", `${progress.open} open · ${progress.done} done`));
+      renderProjectBody(project, progress);
       return;
     }
 
     if (view.list === "area") {
       const area = store.areaById(view.areaId);
       if (!area) return setView({ list: "today" });
-      header.append(element("h1", "", area.title));
-      store.projects().filter(project => project.areaId === area.id && !project.done).forEach(renderProjectBlock);
+      header.append(editableHeading(area.title, title => store.updateArea(area.id, { title })));
+      header.append(element("span", "subtitle", `${store.tasksForArea(area.id, { includeDone: false }).length} open`));
+      const projects = store.projectsForArea(area.id);
+      projects.forEach(renderProjectBlock);
+      if (!projects.length) emptyState("Projects in this area will appear here.");
       addTaskRow({});
       header.append(trashButton(() => {
         if (confirm(`Delete area "${area.title}"? Its projects become loose.`)) {
@@ -193,19 +237,31 @@ export function mount(store) {
     if (!tasks.length && view.list === "anytime") emptyState("Nothing here. Nice.");
   }
 
-  function renderProjectBody(project) {
+  function renderProjectBody(project, progress) {
     const open = store.tasksForProject(project.id, { includeDone: false });
     const done = store.tasksForProject(project.id).filter(task => task.done);
     open.forEach(task => main.append(taskElement(task)));
     addTaskRow({ projectId: project.id });
     if (done.length) {
       const heading = element("div", "project-title", "");
-      heading.append(element("span", "", "Completed"), element("span", "progress", done.length));
+      heading.append(element("span", "", "Completed"), element("span", "progress", `${progress.done} done`));
       main.append(heading);
       done.forEach(task => main.append(taskElement(task)));
     }
 
     const actions = element("div", "project-actions", "");
+    const areaLabel = element("label", "project-area-label", "Area");
+    const areaSelect = document.createElement("select");
+    areaSelect.className = "project-area-select";
+    areaSelect.append(new Option("— none —", ""));
+    store.areas().forEach(area => {
+      const option = new Option(area.title, area.id);
+      option.selected = area.id === project.areaId;
+      areaSelect.append(option);
+    });
+    areaSelect.onchange = () => run(store.assignProjectToArea(project.id, areaSelect.value || null));
+    actions.append(areaLabel, areaSelect);
+
     const complete = element("button", "pill-btn", project.done ? "✓ Reopen project" : "✓ Complete project");
     complete.onclick = () => run(store.completeProject(project.id, !project.done));
     const remove = element("button", "pill-btn", "🗑 Delete project");
@@ -217,11 +273,11 @@ export function mount(store) {
   }
 
   function renderProjectBlock(project) {
-    const block = element("div", "project-block", "");
+    const block = element("div", `project-block${project.done ? " done-project" : ""}`, "");
+    const progress = store.projectProgress(project.id);
     const open = store.tasksForProject(project.id, { includeDone: false });
-    const done = store.tasksForProject(project.id).filter(task => task.done).length;
     const heading = element("div", "project-title is-clickable", "");
-    heading.append(element("span", "", project.title), element("span", "progress", `${open.length} open · ${done} done`));
+    heading.append(element("span", "", project.title), element("span", "progress", `${progress.open} open · ${progress.done} done`));
     heading.onclick = () => setView({ list: "project", projectId: project.id });
     block.append(heading);
     open.forEach(task => block.append(taskElement(task)));
@@ -341,12 +397,12 @@ export function mount(store) {
     const projectRow = row("Project");
     const projectSelect = document.createElement("select");
     projectSelect.append(new Option("— none —", ""));
-    store.projects().filter(project => !project.done).forEach(project => {
+    store.projects().filter(project => !project.done || project.id === task.projectId).forEach(project => {
       const option = new Option(project.title, project.id);
       option.selected = project.id === task.projectId;
       projectSelect.append(option);
     });
-    projectSelect.onchange = () => run(store.updateTask(task.id, { projectId: projectSelect.value || null }));
+    projectSelect.onchange = () => run(store.assignTaskToProject(task.id, projectSelect.value || null));
     projectRow.append(projectSelect);
 
     const deleteRow = row("");
@@ -394,6 +450,48 @@ export function mount(store) {
     };
     wrapper.append(input);
     main.append(wrapper);
+  }
+
+  function editableHeading(title, save) {
+    const heading = element("h1", "editable-heading", title);
+    heading.contentEditable = "true";
+    heading.spellcheck = false;
+    heading.onblur = () => {
+      const next = heading.textContent.trim();
+      if (next && next !== title) run(save(next));
+      else heading.textContent = title;
+    };
+    heading.onkeydown = event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        heading.blur();
+      }
+    };
+    return heading;
+  }
+
+  function renameProject(project) {
+    const title = prompt("Project name:", project.title);
+    if (title?.trim() && title.trim() !== project.title) run(store.updateProject(project.id, { title }));
+  }
+
+  function deleteProject(project) {
+    if (!confirm(`Delete project "${project.title}" and its to-dos?`)) return;
+    run(store.deleteProject(project.id).then(() => {
+      if (view.projectId === project.id) setView({ list: "today" });
+    }));
+  }
+
+  function renameArea(area) {
+    const title = prompt("Area name:", area.title);
+    if (title?.trim() && title.trim() !== area.title) run(store.updateArea(area.id, { title }));
+  }
+
+  function deleteArea(area) {
+    if (!confirm(`Delete area "${area.title}"? Its projects become loose.`)) return;
+    run(store.deleteArea(area.id).then(() => {
+      if (view.areaId === area.id) setView({ list: "today" });
+    }));
   }
 
   function addProject() {
