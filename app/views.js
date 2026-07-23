@@ -246,7 +246,14 @@ export function mount(store) {
       group.forEach(task => main.append(taskElement(task)));
     });
     if (view.list !== "anytime") addTaskRow({});
-    if (!tasks.length && view.list === "anytime") emptyState("Nothing here. Nice.");
+    if (!tasks.length) {
+      const messages = {
+        inbox: "Inbox is empty. Capture what's on your mind.",
+        anytime: "Nothing here. Nice.",
+        someday: "Nothing waiting for someday.",
+      };
+      emptyState(messages[view.list] || "Nothing here. Nice.");
+    }
   }
 
   function renderProjectBody(project, progress) {
@@ -255,6 +262,7 @@ export function mount(store) {
     const done = tasks.filter(task => task.done);
     const headings = store.headingsForProject(project.id);
 
+    if (!tasks.length) emptyState("No to-dos yet. Start with one!");
     open.filter(task => !task.headingId).forEach(task => main.append(taskElement(task)));
     addTaskRow({ projectId: project.id, headingId: null });
     headings.forEach(heading => renderHeadingSection(heading, open));
